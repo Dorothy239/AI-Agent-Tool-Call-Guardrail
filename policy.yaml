@@ -1,0 +1,58 @@
+# Guardrail policy. Anything not explicitly allowed is blocked.
+#
+# Evaluation: tool must be known -> target host must be in allowed_domains ->
+# all matching rules are collected -> the most restrictive action wins
+# (block > require_approval > allow). No match falls back to default_action.
+#
+# Strict YAML: no anchors/aliases, no duplicate keys, max 256 KiB.
+version: 1
+default_action: block
+
+# Global egress allowlist, applied to EVERY tool. "example.com" = exact host,
+# "*.example.com" = subdomains only (not the apex). Add the apex separately.
+allowed_domains:
+  - api.example.com
+  - db.example.com
+  - "*.internal.example.com"
+
+rules:
+  # 1) Destructive SQL in ANY string argument of ANY tool. Matched case-insensitively
+  #    after decoding (percent/base64/hex/\u escapes/HTML entities) and Unicode folding.
+  - id: block-destructive-sql
+    description: Block DELETE / DROP / TRUNCATE hidden anywhere in arguments.
+    action: block
+    tool_names: ["*"]
+    conditions:
+      sql_keywords:
+        - keywords: [DELETE, DROP, TRUNCATE]
+
+  # 2) Prompt-injection phrasing (illustrative; extend with your own patterns).
+  - id: block-prompt-injection
+    description: Block obvious instruction-override phrases.
+    action: block
+    tool_names: ["*"]
+    conditions:
+      regex:
+        - pattern: 'ignore\s+(all\s+)?(previous|prior)\s+instructions'
+
+  # 3) Data-exfiltration control: HTTP tools may only call api.example.com
+  #    (a subset of allowed_domains). Allow rules may only use "domains" conditions.
+  - id: allow-http-to-api
+    description: HTTP tools may only reach the main API host.
+    action: allow
+    tool_names: [http_request, web_fetch]
+    conditions:
+      domains:
+        - api.example.com
+
+  # Low-risk tools. Still subject to every block rule above and to allowed_domains.
+  - id: allow-basic-tools
+    description: Read-only tools.
+    action: allow
+    tool_names: [run_sql, search_docs, read_file]
+
+  # 4) Sensitive tools always need a human.
+  - id: approve-sensitive-tools
+    description: These tools never run without human approval.
+    action: require_approval
+    tool_names: [send_email, transfer_funds, delete_file, execute_shell]
